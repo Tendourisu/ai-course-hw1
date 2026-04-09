@@ -5,8 +5,12 @@ MCTS (蒙特卡洛树搜索) 智能体模板。
 参考：《深度学习与围棋》第 4 章
 """
 
-from dlgo.gotypes import Player, Point
+import math
+import random
+
 from dlgo.goboard import GameState, Move
+from dlgo.gotypes import Point
+from dlgo.scoring import compute_game_result
 
 __all__ = ["MCTSAgent"]
 
@@ -26,20 +30,21 @@ class MCTSNode:
         prior: 先验概率（来自策略网络，可选）
     """
 
-    def __init__(self, game_state, parent=None, prior=1.0):
+    def __init__(self, game_state, parent=None, move=None, prior=1.0):
         self.game_state = game_state
         self.parent = parent
+        self.move = move
         self.children = []
         self.visit_count = 0
         self.value_sum = 0
         self.prior = prior
-        # TODO: 初始化其他必要属性
 
     @property
     def value(self):
         """计算平均价值 = value_sum / visit_count，防止除零。"""
-        # TODO: 实现价值计算
-        pass
+        if self.visit_count == 0:
+            return 0.0
+        return self.value_sum / self.visit_count
 
     def is_leaf(self):
         """是否为叶节点（未展开）。"""
@@ -61,8 +66,27 @@ class MCTSNode:
         Returns:
             最佳子节点
         """
-        # TODO: 实现 UCT 选择
-        pass
+        if not self.children:
+            raise ValueError("best_child() called on a node without children.")
+
+        best_score = float("-inf")
+        best_children = []
+        log_parent_visits = math.log(max(1, self.visit_count))
+
+        for child in self.children:
+            if child.visit_count == 0:
+                score = float("inf")
+            else:
+                exploration = c * math.sqrt(log_parent_visits / child.visit_count)
+                score = child.value + exploration
+
+            if score > best_score:
+                best_score = score
+                best_children = [child]
+            elif score == best_score:
+                best_children.append(child)
+
+        return random.choice(best_children)
 
     def expand(self):
         """
@@ -71,8 +95,22 @@ class MCTSNode:
         Returns:
             新创建的子节点（用于后续模拟）
         """
-        # TODO: 实现节点展开
-        pass
+        if self.is_terminal():
+            return self
+        if self.children:
+            return random.choice(self.children)
+
+        legal_moves = [move for move in self.game_state.legal_moves() if not move.is_resign]
+        if not legal_moves:
+            legal_moves = [Move.resign()]
+
+        random.shuffle(legal_moves)
+        for move in legal_moves:
+            child_state = self.game_state.apply_move(move)
+            child = MCTSNode(child_state, parent=self, move=move)
+            self.children.append(child)
+
+        return random.choice(self.children)
 
     def backup(self, value):
         """
@@ -81,8 +119,11 @@ class MCTSNode:
         Args:
             value: 从当前局面模拟得到的结果（1=胜，0=负，0.5=和）
         """
-        # TODO: 实现反向传播
-        pass
+        self.visit_count += 1
+        self.value_sum += value
+
+        if self.parent is not None:
+            self.parent.backup(1.0 - value)
 
 
 class MCTSAgent:
@@ -97,6 +138,7 @@ class MCTSAgent:
     def __init__(self, num_rounds=1000, temperature=1.0):
         self.num_rounds = num_rounds
         self.temperature = temperature
+        self.rollout_depth = 30
 
     def select_move(self, game_state: GameState) -> Move:
         """
@@ -117,8 +159,30 @@ class MCTSAgent:
         Returns:
             选定的棋步
         """
-        # TODO: 实现 MCTS 主循环
-        pass
+        root = MCTSNode(game_state)
+
+        if game_state.is_over():
+            return Move.pass_turn()
+
+        legal_moves = [move for move in game_state.legal_moves() if not move.is_resign]
+        if len(legal_moves) == 1:
+            return legal_moves[0]
+
+        exploration = math.sqrt(2.0) * max(0.1, self.temperature)
+
+        for _ in range(self.num_rounds):
+            node = root
+
+            while not node.is_leaf() and not node.is_terminal():
+                node = node.best_child(c=exploration)
+
+            if not node.is_terminal():
+                node = node.expand()
+
+            rollout_value = self._simulate(node.game_state)
+            node.backup(1.0 - rollout_value)
+
+        return self._select_best_move(root)
 
     def _simulate(self, game_state):
         """
@@ -136,8 +200,22 @@ class MCTSAgent:
         Returns:
             从当前玩家视角的结果（1=胜, 0=负, 0.5=和）
         """
-        # TODO: 实现快速模拟（含两种优化策略）
-        pass
+        rollout_player = game_state.next_player
+        current_state = game_state
+
+        for _ in range(self.rollout_depth):
+            if current_state.is_over():
+                break
+
+            move = self._select_rollout_move(current_state)
+            current_state = current_state.apply_move(move)
+
+        winner = self._winner_for_rollout(current_state)
+        if winner is None:
+            return 0.5
+        if winner == rollout_player:
+            return 1.0
+        return 0.0
 
     def _select_best_move(self, root):
         """
@@ -149,5 +227,100 @@ class MCTSAgent:
         Returns:
             最佳棋步
         """
-        # TODO: 根据访问次数或价值选择
-        pass
+        if not root.children:
+            legal_moves = [move for move in root.game_state.legal_moves() if not move.is_resign]
+            if legal_moves:
+                return random.choice(legal_moves)
+            return Move.resign()
+
+        best_child = max(
+            root.children,
+            key=lambda child: (child.visit_count, child.value),
+        )
+        return best_child.move
+
+    def _select_rollout_move(self, game_state):
+        """Choose a rollout move with simple local heuristics."""
+        legal_moves = [move for move in game_state.legal_moves() if not move.is_resign]
+        play_moves = [move for move in legal_moves if move.is_play]
+
+        if not play_moves:
+            return Move.pass_turn()
+
+        scored_moves = []
+        for move in play_moves:
+            score = self._score_rollout_move(game_state, move)
+            scored_moves.append((score, move))
+
+        scored_moves.sort(key=lambda item: item[0], reverse=True)
+        candidate_count = min(3, len(scored_moves))
+        top_candidates = [move for _, move in scored_moves[:candidate_count]]
+
+        # Keep some randomness so rollouts do not collapse into a fixed policy.
+        if random.random() < 0.15 and any(move.is_pass for move in legal_moves):
+            return Move.pass_turn()
+        return random.choice(top_candidates)
+
+    def _score_rollout_move(self, game_state, move):
+        """Heuristic score for rollout move ordering."""
+        next_state = game_state.apply_move(move)
+        own_string = next_state.board.get_go_string(move.point)
+        liberties = own_string.num_liberties if own_string is not None else 0
+
+        score = liberties
+        score += 4 * self._count_captured_stones(game_state, next_state)
+        score += self._count_adjacent_allies(game_state, move)
+        score += 0.5 * self._count_adjacent_opponents(game_state, move)
+
+        if liberties <= 1:
+            score -= 3
+
+        center_row = (game_state.board.num_rows + 1) / 2.0
+        center_col = (game_state.board.num_cols + 1) / 2.0
+        distance_to_center = abs(move.point.row - center_row) + abs(move.point.col - center_col)
+        score -= 0.1 * distance_to_center
+
+        return score
+
+    def _count_captured_stones(self, game_state, next_state):
+        """Count how many opponent stones are captured by a move."""
+        player = game_state.next_player
+        opponent = player.other
+        before = self._count_stones(game_state, opponent)
+        after = self._count_stones(next_state, opponent)
+        return before - after
+
+    def _count_stones(self, game_state, player):
+        """Count stones of one color on the board."""
+        total = 0
+        for row in range(1, game_state.board.num_rows + 1):
+            for col in range(1, game_state.board.num_cols + 1):
+                if game_state.board.get(Point(row, col)) == player:
+                    total += 1
+        return total
+
+    def _count_adjacent_allies(self, game_state, move):
+        """Count friendly neighboring stones."""
+        count = 0
+        for neighbor in move.point.neighbors():
+            if not game_state.board.is_on_grid(neighbor):
+                continue
+            if game_state.board.get(neighbor) == game_state.next_player:
+                count += 1
+        return count
+
+    def _count_adjacent_opponents(self, game_state, move):
+        """Count opponent neighboring stones."""
+        count = 0
+        for neighbor in move.point.neighbors():
+            if not game_state.board.is_on_grid(neighbor):
+                continue
+            if game_state.board.get(neighbor) == game_state.next_player.other:
+                count += 1
+        return count
+
+    def _winner_for_rollout(self, game_state):
+        """Get a winner at the end of a rollout or by quick evaluation."""
+        if game_state.is_over():
+            return game_state.winner()
+        return compute_game_result(game_state).winner
