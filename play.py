@@ -55,6 +55,8 @@ AGENTS = {
     "minimax": minimax_agent,
 }
 
+PLAYER_TYPES = ["human", *AGENTS.keys()]
+
 
 def print_board(game_state):
     """打印棋盘（简化版）。"""
@@ -129,13 +131,13 @@ def main():
     parser = argparse.ArgumentParser(description="围棋 AI 对弈")
     parser.add_argument(
         "--agent1",
-        choices=AGENTS.keys(),
+        choices=PLAYER_TYPES,
         default="random",
         help="黑方智能体",
     )
     parser.add_argument(
         "--agent2",
-        choices=AGENTS.keys(),
+        choices=PLAYER_TYPES,
         default="random",
         help="白方智能体",
     )
@@ -156,8 +158,31 @@ def main():
         action="store_true",
         help="静默模式（只显示结果）",
     )
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="启用图形界面模式（支持人机/机机对弈）",
+    )
 
     args = parser.parse_args()
+
+    if args.ui:
+        try:
+            from ui.go_gui import launch_gui
+        except Exception as e:  # noqa: BLE001
+            print(f"[ERROR] 图形界面启动失败: {e}")
+            return
+
+        launch_gui(
+            board_size=args.size,
+            black_type=args.agent1,
+            white_type=args.agent2,
+        )
+        return
+
+    if args.agent1 == "human" or args.agent2 == "human":
+        print("[ERROR] 命令行模式不支持 human，请添加 --ui 参数启动图形界面。")
+        return
 
     agent1 = AGENTS[args.agent1]
     agent2 = AGENTS[args.agent2]
